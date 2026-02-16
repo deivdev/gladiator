@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gladiator Arena</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: #0a0a0f;
+    color: #e0d8c8;
+    font-family: 'Courier New', monospace;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    overflow: hidden;
+  }
+
+  #game {
+    width: 640px;
+    position: relative;
+  }
+
+  .screen {
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+  }
+  .screen.active { display: flex; }
+
+  /* --- Training Screen --- */
+  .title {
+    font-size: 28px;
+    font-weight: bold;
+    color: #c8a050;
+    text-transform: uppercase;
+    letter-spacing: 4px;
+    text-align: center;
+  }
+  .subtitle {
+    font-size: 12px;
+    color: #887755;
+    text-align: center;
+    max-width: 400px;
+    line-height: 1.5;
+  }
+
+  #training-text {
+    width: 100%;
+    max-width: 440px;
+    height: 120px;
+    background: #151520;
+    border: 2px solid #3a3530;
+    color: #e0d8c8;
+    font-family: 'Courier New', monospace;
+    font-size: 14px;
+    padding: 12px;
+    resize: none;
+    outline: none;
+  }
+  #training-text:focus { border-color: #c8a050; }
+  #training-text::placeholder { color: #554a3a; }
+
+  .char-count {
+    font-size: 11px;
+    color: #554a3a;
+    align-self: flex-end;
+    margin-top: -12px;
+    margin-right: 20px;
+  }
+
+  .btn {
+    background: #c8a050;
+    color: #0a0a0f;
+    border: none;
+    font-family: 'Courier New', monospace;
+    font-size: 18px;
+    font-weight: bold;
+    padding: 12px 48px;
+    cursor: pointer;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    transition: background 0.15s;
+  }
+  .btn:hover { background: #e0c070; }
+  .btn:active { background: #a88040; }
+  .btn:disabled { background: #665530; cursor: default; }
+
+  .mode-toggle {
+    display: flex;
+    gap: 0;
+    border: 2px solid #3a3530;
+    overflow: hidden;
+  }
+  .mode-toggle button {
+    background: #151520;
+    color: #887755;
+    border: none;
+    font-family: 'Courier New', monospace;
+    font-size: 14px;
+    padding: 8px 24px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .mode-toggle button.active {
+    background: #c8a050;
+    color: #0a0a0f;
+  }
+  .mode-toggle button:not(.active):hover {
+    background: #252535;
+  }
+
+  /* --- Matchmaking Screen --- */
+  .match-status {
+    font-size: 24px;
+    color: #c8a050;
+    letter-spacing: 3px;
+    min-height: 40px;
+  }
+
+  .matchup-names {
+    opacity: 0;
+    transition: opacity 0.4s;
+    text-align: center;
+  }
+  .matchup-names.visible { opacity: 1; }
+
+  .matchup-names .player-name {
+    font-size: 20px;
+    color: #cc3333;
+  }
+  .matchup-names .vs {
+    font-size: 14px;
+    color: #887755;
+    margin: 4px 0;
+  }
+  .matchup-names .opponent-name {
+    font-size: 20px;
+    color: #3366cc;
+  }
+
+  /* --- Fight Screen --- */
+  #arena-canvas {
+    display: block;
+    width: 640px;
+    height: 400px;
+    border: 2px solid #3a3530;
+  }
+
+  /* --- Result Screen --- */
+  .result-title {
+    font-size: 36px;
+    font-weight: bold;
+    letter-spacing: 6px;
+  }
+  .result-title.win { color: #44cc44; }
+  .result-title.lose { color: #cc3333; }
+  .result-title.draw { color: #c8a050; }
+
+  #fight-summary {
+    text-align: center;
+    line-height: 1.8;
+    font-size: 13px;
+    color: #aa9977;
+  }
+  .summary-row { margin: 2px 0; }
+
+  #fight-hint {
+    font-size: 12px;
+    color: #887755;
+    font-style: italic;
+    text-align: center;
+    max-width: 400px;
+    line-height: 1.5;
+    margin-top: 8px;
+  }
+
+  /* --- Online controls container --- */
+  #online-controls {
+    width: 100%;
+    max-width: 440px;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+  }
+  #online-controls.visible { display: flex; }
+
+  /* --- Nickname input (Online mode) --- */
+  #nickname-input {
+    width: 100%;
+    max-width: 440px;
+    background: #151520;
+    border: 2px solid #3a3530;
+    color: #e0d8c8;
+    font-family: 'Courier New', monospace;
+    font-size: 18px;
+    padding: 12px;
+    text-align: center;
+    outline: none;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+  }
+  #nickname-input:focus { border-color: #c8a050; }
+  #nickname-input::placeholder { color: #554a3a; text-transform: none; letter-spacing: 0; }
+
+  #bot-status {
+    font-size: 13px;
+    color: #887755;
+    margin-top: -8px;
+  }
+  #bot-status.has-record { color: #c8a050; }
+
+  #bot-prompt {
+    width: 100%;
+    max-width: 440px;
+    height: 80px;
+    background: #151520;
+    border: 2px solid #3a3530;
+    color: #e0d8c8;
+    font-family: 'Courier New', monospace;
+    font-size: 13px;
+    padding: 10px;
+    resize: none;
+    outline: none;
+  }
+  #bot-prompt:focus { border-color: #c8a050; }
+  #bot-prompt::placeholder { color: #554a3a; }
+
+  /* --- Training reveal (Result screen) --- */
+  #training-reveal {
+    font-size: 12px;
+    color: #887755;
+    text-align: center;
+    max-width: 440px;
+    line-height: 1.5;
+    margin-top: 4px;
+  }
+  #training-reveal .reveal-label {
+    color: #554a3a;
+    font-size: 11px;
+    margin-bottom: 4px;
+  }
+  #training-reveal .reveal-text {
+    color: #c8a050;
+    font-style: italic;
+  }
+</style>
+</head>
+<body>
+<div id="game">
+
+  <!-- Training Screen -->
+  <div id="screen-training" class="screen active">
+    <div class="title">Gladiator Arena</div>
+    <div class="subtitle">
+      Describe your gladiator's training. Weapons, fighting style, physical traits &mdash;
+      your words shape a warrior. Choose wisely.
+    </div>
+    <div id="solo-controls">
+      <textarea id="training-text" maxlength="200"
+        placeholder="e.g. Train with a heavy axe. Build muscle. Fight aggressive and never retreat..."></textarea>
+      <div class="char-count"><span id="char-count">0</span>/200</div>
+    </div>
+    <div id="online-controls" style="display:none;">
+      <input id="nickname-input" type="text" maxlength="20" placeholder="Enter bot nickname..." autocomplete="off">
+      <span id="bot-status">New bot</span>
+      <textarea id="bot-prompt" maxlength="500"
+        placeholder="Instructions for your bot (optional)&#10;e.g. Focus on defense this time. Last fight you took too much damage."></textarea>
+    </div>
+    <div class="mode-toggle">
+      <button id="mode-solo" class="active">Solo</button>
+      <button id="mode-online">Online</button>
+    </div>
+    <button id="btn-fight" class="btn">Fight!</button>
+  </div>
+
+  <!-- Matchmaking Screen -->
+  <div id="screen-matchmaking" class="screen">
+    <div class="match-status" id="match-status">FINDING OPPONENT...</div>
+    <div class="matchup-names" id="matchup-names">
+      <div class="player-name" id="player-match-name">Champion</div>
+      <div class="vs">VS</div>
+      <div class="opponent-name" id="opponent-match-name">???</div>
+    </div>
+  </div>
+
+  <!-- Fight Screen -->
+  <div id="screen-fight" class="screen">
+    <canvas id="arena-canvas"></canvas>
+  </div>
+
+  <!-- Result Screen -->
+  <div id="screen-result" class="screen">
+    <div id="result-text" class="result-title">VICTORY</div>
+    <div id="fight-summary"></div>
+    <div id="fight-hint"></div>
+    <div id="training-reveal" style="display:none;">
+      <div class="reveal-label">YOUR BOT TRAINED:</div>
+      <div class="reveal-text" id="reveal-text"></div>
+    </div>
+    <button id="btn-again" class="btn">Train Again</button>
+  </div>
+
+</div>
+
+<script type="module" src="js/main.js"></script>
+<script>
+  // Character counter (non-module)
+  document.addEventListener('DOMContentLoaded', () => {
+    const ta = document.getElementById('training-text');
+    const cc = document.getElementById('char-count');
+    ta.addEventListener('input', () => { cc.textContent = ta.value.length; });
+  });
+</script>
+</body>
+</html>
