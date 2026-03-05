@@ -28,8 +28,6 @@ for (let i = 0; i < 6; i++) {
   });
 }
 
-const ACTION_DURATION_HEAVY = 16;
-
 let canvas, ctx;
 
 export function initRenderer(canvasEl) {

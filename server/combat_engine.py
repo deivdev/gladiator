@@ -1,4 +1,4 @@
-"""Tick-based combat engine + AI — Python port of js/combat.js + js/ai.js"""
+"""Tick-based combat engine + AI."""
 
 import math
 import random
@@ -43,7 +43,6 @@ def create_combat_state(gladiator_a, gladiator_b):
         "totalTicks": TOTAL_TICKS,
         "ticksPerSec": TICKS_PER_SEC,
         "fighters": [gladiator_a, gladiator_b],
-        "log": [],
         "finished": False,
         "winner": None,
         "stats": [
@@ -53,24 +52,9 @@ def create_combat_state(gladiator_a, gladiator_b):
     }
 
 
-VALID_ACTIONS = set(ACTION_DURATION.keys()) - {"idle"}
-
-
-def fighters_needing_action(state):
-    """Return indices of fighters that need a new action."""
-    result = []
-    for i in range(2):
-        f = state["fighters"][i]
-        if f["actionTimer"] <= 0 and f["staggerTimer"] <= 0:
-            result.append(i)
-    return result
-
-
 def apply_action(state, fighter_idx, action):
     """Apply a chosen action to a fighter (stamina, timers, flags)."""
     fighter = state["fighters"][fighter_idx]
-    if action not in VALID_ACTIONS:
-        action = "advance"
 
     cost = STAMINA_COST.get(action, 0)
     if cost > 0 and fighter["stamina"] < cost:
@@ -105,7 +89,6 @@ def tick_combat(state):
     # Process actions
     for i in range(2):
         fighter = fighters[i]
-        opponent = fighters[1 - i]
 
         if fighter["staggerTimer"] > 0:
             fighter["staggerTimer"] -= 1
@@ -142,11 +125,6 @@ def tick_combat(state):
     for f in fighters:
         if f["action"] != "recover":
             f["stamina"] = min(f["maxStamina"], f["stamina"] + 0.15)
-
-    # Hit cooldowns
-    for f in fighters:
-        if f["hitCooldown"] > 0:
-            f["hitCooldown"] -= 1
 
     # Floating text decay
     for f in fighters:
@@ -249,7 +227,7 @@ def add_floating_text(fighter, text, color):
     })
 
 
-# --- AI: weighted random action selection (port of js/ai.js) ---
+# --- AI: weighted random action selection ---
 
 def choose_action(gladiator, opponent, distance):
     s = gladiator["stats"]
@@ -268,7 +246,6 @@ def choose_action(gladiator, opponent, distance):
         "recover": 5,
     }
 
-    # Movement
     if not in_range:
         weights["advance"] += 15 + s["aggression"]
         weights["retreat"] -= 3
@@ -276,21 +253,17 @@ def choose_action(gladiator, opponent, distance):
         weights["advance"] += s["aggression"] * 0.5
         weights["retreat"] += s["defense"] * 0.5
 
-    # Attacks — only if in range
     if in_range:
         weights["light_attack"] = 10 + s["agility"] + s["aggression"] * 0.5
         weights["heavy_attack"] = 5 + s["strength"] + s["aggression"] * 0.5
-
         if close_range:
             weights["light_attack"] += 5
             weights["heavy_attack"] += 3
 
-    # Defensive
     if in_range:
         weights["block"] += s["defense"]
         weights["dodge"] += s["agility"] * 0.8
 
-    # Stamina awareness
     if stamina_pct < 0.3:
         weights["recover"] += 20
         weights["heavy_attack"] *= 0.3
@@ -299,7 +272,6 @@ def choose_action(gladiator, opponent, distance):
     elif stamina_pct < 0.5:
         weights["recover"] += 8
 
-    # Low HP = more desperate
     if hp_pct < 0.3:
         weights["heavy_attack"] *= 1.5
         if s["aggression"] > 12:
@@ -307,7 +279,6 @@ def choose_action(gladiator, opponent, distance):
         else:
             weights["retreat"] += 8
 
-    # React to opponent action
     if opponent["action"] == "heavy_attack" and in_range:
         weights["dodge"] += 10
         weights["block"] += 8
@@ -317,7 +288,6 @@ def choose_action(gladiator, opponent, distance):
         weights["light_attack"] += 5
         weights["heavy_attack"] += 5
 
-    # Clamp negatives
     for k in weights:
         if weights[k] < 0:
             weights[k] = 0

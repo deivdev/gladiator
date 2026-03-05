@@ -1,19 +1,13 @@
-// main.js — Game flow controller
+// main.js — Game flow controller (all combat runs server-side via WebSocket)
 
-import { trainGladiator } from './training.js';
-import { createRandomOpponent } from './gladiator.js';
-import { createCombatState, tickCombat } from './combat.js';
 import { initRenderer, renderFrame } from './renderer.js';
-let net = null; // loaded on demand
+import * as net from './net.js';
 
 let currentScreen = 'training';
-let combatState = null;
-let combatInterval = null;
-let playerGladiator = null;
 let mode = 'solo'; // 'solo' or 'online'
-let onlinePlayerIdx = null; // 0 or 1 — which fighter is "you" in online mode
+let onlinePlayerIdx = 0;
 let dotInterval = null;
-let botTrainingText = null; // Claude-generated training text for reveal
+let botTrainingText = null;
 
 const screens = {};
 const $ = id => document.getElementById(id);
@@ -46,7 +40,6 @@ function setMode(m) {
   $('mode-solo').classList.toggle('active', m === 'solo');
   $('mode-online').classList.toggle('active', m === 'online');
 
-  // Toggle visibility of solo vs online controls
   $('solo-controls').style.display = m === 'solo' ? '' : 'none';
   const onlineEl = $('online-controls');
   if (m === 'online') {
@@ -90,10 +83,10 @@ function showScreen(name) {
   currentScreen = name;
 }
 
-function onFight() {
+async function onFight() {
   if (mode === 'solo') {
     const text = $('training-text').value.trim();
-    onFightSolo(text);
+    await startFight({ type: 'solo', text }, 'FINDING OPPONENT');
   } else {
     const nickname = $('nickname-input').value.trim();
     if (!nickname) {
@@ -101,75 +94,22 @@ function onFight() {
       return;
     }
     const prompt = $('bot-prompt').value.trim();
-    onFightOnline(nickname, prompt);
+    await startFight({ type: 'join', nickname, prompt }, 'CONNECTING');
   }
 }
 
-// --- Solo path (unchanged logic) ---
-
-function onFightSolo(text) {
-  playerGladiator = trainGladiator('Champion', text);
-
-  showScreen('matchmaking');
-
-  const opponent = createRandomOpponent();
-  $('opponent-match-name').textContent = opponent.name;
-
-  const matchText = $('match-status');
-  matchText.textContent = 'FINDING OPPONENT';
-  let dots = 0;
-  dotInterval = setInterval(() => {
-    dots = (dots + 1) % 4;
-    matchText.textContent = 'FINDING OPPONENT' + '.'.repeat(dots);
-  }, 400);
-
-  setTimeout(() => {
-    clearInterval(dotInterval);
-    dotInterval = null;
-    matchText.textContent = 'VS';
-    $('matchup-names').classList.add('visible');
-    $('player-match-name').textContent = playerGladiator.name;
-    $('opponent-match-name').textContent = opponent.name;
-
-    setTimeout(() => {
-      $('matchup-names').classList.remove('visible');
-      startFightSolo(playerGladiator, opponent);
-    }, 1500);
-  }, 2000);
-}
-
-function startFightSolo(player, opponent) {
-  showScreen('fight');
-  combatState = createCombatState(player, opponent);
-
-  const tickMs = 1000 / combatState.ticksPerSec;
-  combatInterval = setInterval(() => {
-    tickCombat(combatState);
-    renderFrame(combatState);
-
-    if (combatState.finished) {
-      clearInterval(combatInterval);
-      combatInterval = null;
-      setTimeout(() => showResult(combatState, 0), 1200);
-    }
-  }, tickMs);
-}
-
-// --- Online path ---
-
-async function onFightOnline(nickname, prompt) {
+async function startFight(joinMsg, statusText) {
   botTrainingText = null;
+  onlinePlayerIdx = 0;
 
   showScreen('matchmaking');
   const matchText = $('match-status');
-  matchText.textContent = 'CONNECTING';
-
+  matchText.textContent = statusText;
   $('btn-fight').disabled = true;
 
   try {
-    if (!net) net = await import('./net.js');
     await net.connect(onServerMessage);
-    net.send({ type: 'join', nickname, prompt });
+    net.send(joinMsg);
   } catch {
     matchText.textContent = 'CONNECTION FAILED';
     $('btn-fight').disabled = false;
@@ -177,39 +117,33 @@ async function onFightOnline(nickname, prompt) {
     return;
   }
 
-  matchText.textContent = 'SUMMONING BOT';
+  // Animate dots while waiting
   let dots = 0;
   dotInterval = setInterval(() => {
     dots = (dots + 1) % 4;
-    matchText.textContent = 'SUMMONING BOT' + '.'.repeat(dots);
+    matchText.textContent = statusText + '.'.repeat(dots);
   }, 400);
 }
 
 function onServerMessage(msg) {
   switch (msg.type) {
     case 'thinking':
-      // Already showing "SUMMONING BOT..."
+      clearDots();
+      setDots('SUMMONING BOT');
       break;
 
     case 'trained':
-      // Claude generated training text — store for reveal
       botTrainingText = msg.text;
-      if (dotInterval) { clearInterval(dotInterval); dotInterval = null; }
-      $('match-status').textContent = 'WAITING FOR OPPONENT';
-      let dots = 0;
-      dotInterval = setInterval(() => {
-        dots = (dots + 1) % 4;
-        $('match-status').textContent = 'WAITING FOR OPPONENT' + '.'.repeat(dots);
-      }, 400);
+      clearDots();
+      setDots('WAITING FOR OPPONENT');
       break;
 
     case 'queued':
-      // Already showing "WAITING FOR OPPONENT..."
       break;
 
     case 'matched':
       onlinePlayerIdx = msg.you;
-      if (dotInterval) { clearInterval(dotInterval); dotInterval = null; }
+      clearDots();
 
       $('match-status').textContent = 'VS';
       $('matchup-names').classList.add('visible');
@@ -224,13 +158,11 @@ function onServerMessage(msg) {
       break;
 
     case 'tick':
-      // Server sends full state each tick — just render it
       renderFrame(msg);
       break;
 
     case 'result':
       net.disconnect();
-      // Build a state-like object for showResult
       showResult({
         fighters: msg.fighters,
         winner: msg.winner,
@@ -240,12 +172,27 @@ function onServerMessage(msg) {
   }
 }
 
-// --- Shared result screen ---
+function setDots(text) {
+  let dots = 0;
+  $('match-status').textContent = text;
+  dotInterval = setInterval(() => {
+    dots = (dots + 1) % 4;
+    $('match-status').textContent = text + '.'.repeat(dots);
+  }, 400);
+}
+
+function clearDots() {
+  if (dotInterval) {
+    clearInterval(dotInterval);
+    dotInterval = null;
+  }
+}
+
+// --- Result screen ---
 
 function showResult(state, myIdx) {
   showScreen('result');
 
-  const [a, b] = state.fighters;
   const resultEl = $('result-text');
   const summaryEl = $('fight-summary');
   const hintEl = $('fight-hint');
@@ -306,8 +253,8 @@ function generateHint(state, myIdx) {
 
 function onTrainAgain() {
   $('training-text').value = '';
-  if (net) net.disconnect();
-  onlinePlayerIdx = null;
+  net.disconnect();
+  onlinePlayerIdx = 0;
   botTrainingText = null;
   $('training-reveal').style.display = 'none';
   showScreen('training');

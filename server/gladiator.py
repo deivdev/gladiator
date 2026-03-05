@@ -1,4 +1,4 @@
-"""Gladiator data model — Python port of js/gladiator.js"""
+"""Gladiator data model."""
 
 import random
 
@@ -37,7 +37,6 @@ def create_gladiator(name, stats):
         "actionTimer": 0,
         "blockActive": False,
         "dodgeActive": False,
-        "hitCooldown": 0,
         "staggerTimer": 0,
         "floatingTexts": [],
     }
