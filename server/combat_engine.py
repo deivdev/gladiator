@@ -53,6 +53,41 @@ def create_combat_state(gladiator_a, gladiator_b):
     }
 
 
+VALID_ACTIONS = set(ACTION_DURATION.keys()) - {"idle"}
+
+
+def fighters_needing_action(state):
+    """Return indices of fighters that need a new action."""
+    result = []
+    for i in range(2):
+        f = state["fighters"][i]
+        if f["actionTimer"] <= 0 and f["staggerTimer"] <= 0:
+            result.append(i)
+    return result
+
+
+def apply_action(state, fighter_idx, action):
+    """Apply a chosen action to a fighter (stamina, timers, flags)."""
+    fighter = state["fighters"][fighter_idx]
+    if action not in VALID_ACTIONS:
+        action = "advance"
+
+    cost = STAMINA_COST.get(action, 0)
+    if cost > 0 and fighter["stamina"] < cost:
+        fighter["action"] = "recover"
+        fighter["actionTimer"] = ACTION_DURATION["recover"]
+    else:
+        fighter["action"] = action
+        fighter["actionTimer"] = ACTION_DURATION.get(action, 6)
+        if cost > 0:
+            fighter["stamina"] -= cost
+        elif cost < 0:
+            fighter["stamina"] = min(fighter["maxStamina"], fighter["stamina"] - cost)
+
+    fighter["blockActive"] = action == "block"
+    fighter["dodgeActive"] = action == "dodge"
+
+
 def tick_combat(state):
     if state["finished"]:
         return
@@ -60,28 +95,12 @@ def tick_combat(state):
     fighters = state["fighters"]
     a, b = fighters
 
-    # Decide new actions
+    # Auto-select actions via weighted-random AI
     for i in range(2):
-        fighter = fighters[i]
-        opponent = fighters[1 - i]
-        if fighter["actionTimer"] <= 0 and fighter["staggerTimer"] <= 0:
+        if fighters[i]["actionTimer"] <= 0 and fighters[i]["staggerTimer"] <= 0:
             dist = abs(a["x"] - b["x"])
-            action = choose_action(fighter, opponent, dist)
-
-            cost = STAMINA_COST.get(action, 0)
-            if cost > 0 and fighter["stamina"] < cost:
-                fighter["action"] = "recover"
-                fighter["actionTimer"] = ACTION_DURATION["recover"]
-            else:
-                fighter["action"] = action
-                fighter["actionTimer"] = ACTION_DURATION.get(action, 6)
-                if cost > 0:
-                    fighter["stamina"] -= cost
-                elif cost < 0:
-                    fighter["stamina"] = min(fighter["maxStamina"], fighter["stamina"] - cost)
-
-            fighter["blockActive"] = action == "block"
-            fighter["dodgeActive"] = action == "dodge"
+            action = choose_action(fighters[i], fighters[1 - i], dist)
+            apply_action(state, i, action)
 
     # Process actions
     for i in range(2):

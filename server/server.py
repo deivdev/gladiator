@@ -22,7 +22,7 @@ BOTS_DIR = PROJECT_ROOT / "bots"
 
 # LLM command: list of [executable, ...flags] that accepts a prompt as the last arg.
 # Swap this to use a different CLI (e.g. ["ollama", "run", "llama3"]).
-LLM_CMD = ["claude", "-p"]
+LLM_CMD = ["claude", "-p", "--model", "claude-haiku-4-5-20251001"]
 LLM_TIMEOUT = 60
 
 # --- Static file serving ---
@@ -65,7 +65,7 @@ def save_fight_result(nickname: str, result_data: dict):
         fight_num = content.count("### Fight ") + 1
     else:
         # Create new bot file
-        content = f"# {nickname}\n\nCreated: {datetime.now(timezone.utc).strftime('%Y-%m-%d')}\n\n## Fight Log\n"
+        content = f"# {nickname}\n\nCreated: {datetime.now(timezone.utc).strftime('%Y-%m-%d')}\n\n## Strategy Notes\n\nNo fights yet.\n\n## Fight Log\n"
 
     outcome = result_data["outcome"]  # WIN, LOSS, DRAW
     opponent = result_data["opponent"]
@@ -128,11 +128,16 @@ muscle→strength+3/endurance+1, fight→aggression+2/strength+1
 
 Base stats are all 10. Higher aggression = more attacks. Higher defense = more blocking.
 Higher agility = more dodging. Higher strength = more damage. Higher endurance = more HP.
+Repeating a keyword does NOT stack — each keyword only counts once. Pack as many DIFFERENT keywords as possible.
 
+Here is your full memory (strategy notes + fight history):
+---
 {memory_contents}
+---
 
 {user_prompt}
 
+Use your strategy notes and fight history to pick the best training. Adapt based on past results.
 Output ONLY the training text (max 200 chars). No explanation, no quotes, no markdown."""
 
 
@@ -161,6 +166,93 @@ async def spawn_llm(nickname: str, memory: str, user_prompt: str = "") -> str:
     except asyncio.TimeoutError:
         proc.kill()
         return "train hard fight harder"
+
+
+# --- Post-fight reflection ---
+
+REFLECTION_PROMPT = """You are a gladiator bot named "{nickname}". You just finished a fight.
+
+Here is your current memory:
+---
+{memory_contents}
+---
+
+Fight result:
+- Outcome: {outcome} vs {opponent}
+- Training used: "{training_text}"
+- My HP: {my_hp}/{my_max_hp} | Their HP: {their_hp}/{their_max_hp}
+- My hits: {my_hits} | Crits: {my_crits} | Heavy hits: {my_heavy}
+- Their dodges: {their_dodges} | Their blocks: {their_blocks}
+
+Analyze what happened and write updated Strategy Notes. Consider:
+- What keywords/stats worked well or poorly?
+- What should you try differently next time?
+- Any patterns across multiple fights?
+
+Output ONLY the new Strategy Notes section content (2-5 short bullet points). No heading, no markdown headers, just the bullet points."""
+
+
+async def reflect_on_fight(nickname: str, result_data: dict):
+    """Call LLM once after a fight to update the bot's Strategy Notes."""
+    memory = load_bot_memory(nickname)
+    if not memory:
+        return
+
+    outcome = result_data["outcome"]
+    prompt = REFLECTION_PROMPT.format(
+        nickname=nickname,
+        memory_contents=memory,
+        outcome=outcome,
+        opponent=result_data["opponent"],
+        training_text=result_data["training_text"],
+        my_hp=result_data["my_hp"],
+        my_max_hp=result_data["my_max_hp"],
+        their_hp=result_data["their_hp"],
+        their_max_hp=result_data["their_max_hp"],
+        my_hits=result_data["my_stats"]["hits"],
+        my_crits=result_data["my_stats"]["crits"],
+        my_heavy=result_data["my_stats"]["heavyHits"],
+        their_dodges=result_data["their_stats"]["dodges"],
+        their_blocks=result_data["their_stats"]["blocks"],
+    )
+
+    proc = await asyncio.create_subprocess_exec(
+        *LLM_CMD, prompt,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=LLM_TIMEOUT)
+        notes = stdout.decode().strip()
+        if notes:
+            update_strategy_notes(nickname, notes)
+    except asyncio.TimeoutError:
+        proc.kill()
+
+
+def update_strategy_notes(nickname: str, new_notes: str):
+    """Replace the Strategy Notes section in the bot's memory file."""
+    path = BOTS_DIR / f"{nickname}.md"
+    if not path.exists():
+        return
+
+    content = path.read_text()
+    # Find and replace the Strategy Notes section
+    marker_start = "## Strategy Notes\n"
+    marker_end = "\n## Fight Log\n"
+
+    start_idx = content.find(marker_start)
+    end_idx = content.find(marker_end)
+
+    if start_idx == -1 or end_idx == -1:
+        return
+
+    new_content = (
+        content[:start_idx + len(marker_start)]
+        + "\n" + new_notes + "\n"
+        + content[end_idx:]
+    )
+    path.write_text(new_content)
 
 
 # --- Matchmaking ---
@@ -268,7 +360,7 @@ async def start_match(ws_a, name_a, text_a, ws_b, name_b, text_b):
 
 
 async def run_fight(state, ws_0, ws_1):
-    """Tick loop: runs combat at 20 ticks/sec, broadcasts snapshots."""
+    """Tick loop: built-in AI selects actions, server ticks combat."""
     sockets = [ws_0, ws_1]
     tick_interval = 1.0 / state["ticksPerSec"]
 
@@ -277,8 +369,7 @@ async def run_fight(state, ws_0, ws_1):
             await asyncio.sleep(tick_interval)
             tick_combat(state)
             snapshot = build_snapshot(state)
-            payload = json.dumps(snapshot)
-            await broadcast(sockets, payload)
+            await broadcast(sockets, json.dumps(snapshot))
 
         # Send final result
         result = {
@@ -289,15 +380,18 @@ async def run_fight(state, ws_0, ws_1):
         }
         await broadcast(sockets, json.dumps(result))
 
-        # Save fight results to bot memory
-        save_fight_results(state)
+        # Save fight results and run post-fight reflection
+        result_data_list = save_fight_results(state)
+        # Run reflections in parallel for both bots
+        await asyncio.gather(*[
+            reflect_on_fight(rd["nickname"], rd) for rd in result_data_list
+        ])
     except asyncio.CancelledError:
-        # One player disconnected — declare other the winner
         for ws in sockets:
             try:
                 await ws.send_text(json.dumps({
                     "type": "result",
-                    "winner": 0,  # the remaining player wins
+                    "winner": 0,
                     "stats": state["stats"],
                     "fighters": serialize_fighters(state["fighters"]),
                     "disconnect": True,
@@ -310,10 +404,10 @@ async def run_fight(state, ws_0, ws_1):
 
 
 def save_fight_results(state):
-    """Save fight outcome to both bots' memory files."""
+    """Save fight outcome to both bots' memory files. Returns result data for reflection."""
     meta = state.get("_meta")
     if not meta:
-        return
+        return []
 
     names = meta["names"]
     texts = meta["texts"]
@@ -321,6 +415,7 @@ def save_fight_results(state):
     fighters = state["fighters"]
     stats = state["stats"]
 
+    result_data_list = []
     for i in range(2):
         j = 1 - i
         if winner is None:
@@ -330,7 +425,8 @@ def save_fight_results(state):
         else:
             outcome = "LOSS"
 
-        save_fight_result(names[i], {
+        rd = {
+            "nickname": names[i],
             "outcome": outcome,
             "opponent": names[j],
             "training_text": texts[i],
@@ -340,7 +436,11 @@ def save_fight_results(state):
             "their_max_hp": fighters[j]["maxHp"],
             "my_stats": stats[i],
             "their_stats": stats[j],
-        })
+        }
+        save_fight_result(names[i], rd)
+        result_data_list.append(rd)
+
+    return result_data_list
 
 
 def build_snapshot(state):
